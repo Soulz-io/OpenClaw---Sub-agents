@@ -1,0 +1,15 @@
+{
+  "name": "openclaw-subagents",
+  "version": "1.0.0",
+  "description": "Subagent dashboard plugin for OpenClaw Control UI",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  },
+  "files": [
+    "index.ts",
+    "src/",
+    "ui/",
+    "openclaw.plugin.json"
+  ]
+}

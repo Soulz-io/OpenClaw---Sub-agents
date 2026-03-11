@@ -1,0 +1,21 @@
+{
+  "id": "openclaw-subagents",
+  "name": "Subagents Dashboard",
+  "description": "Control UI tab showing all spawned sub-agents with prompts, status, and token usage.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "pollIntervalMs": {
+        "type": "number",
+        "default": 5000
+      }
+    }
+  },
+  "uiHints": {
+    "pollIntervalMs": {
+      "label": "Poll Interval (ms)",
+      "help": "How often the dashboard refreshes. Default: 5000ms."
+    }
+  }
+}
