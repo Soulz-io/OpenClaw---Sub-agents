@@ -1,8 +1,13 @@
 {
   "name": "openclaw-subagents",
-  "version": "1.0.0",
-  "description": "Subagent dashboard plugin for OpenClaw Control UI",
+  "version": "2.0.0",
+  "description": "Sub-agents dashboard and spawn modal for OpenClaw Control UI",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Soulz-io/OpenClaw---Sub-agents.git"
+  },
   "openclaw": {
     "extensions": ["./index.ts"]
   },

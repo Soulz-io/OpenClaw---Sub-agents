@@ -9,6 +9,14 @@
       "pollIntervalMs": {
         "type": "number",
         "default": 5000
+      },
+      "soulzApiUrl": {
+        "type": "string",
+        "default": "http://localhost:3000"
+      },
+      "soulzApiKey": {
+        "type": "string",
+        "default": ""
       }
     }
   },
@@ -16,6 +24,15 @@
     "pollIntervalMs": {
       "label": "Poll Interval (ms)",
       "help": "How often the dashboard refreshes. Default: 5000ms."
+    },
+    "soulzApiUrl": {
+      "label": "Soulz API URL",
+      "help": "URL of the Soulz platform API for agent generation."
+    },
+    "soulzApiKey": {
+      "label": "Soulz API Key",
+      "help": "API key for authenticating with the Soulz platform.",
+      "sensitive": true
     }
   }
 }
