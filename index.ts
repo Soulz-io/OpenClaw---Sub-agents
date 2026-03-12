@@ -1,8 +1,9 @@
+import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { createHttpHandler } from "./src/http-handler.js";
 import { registerGatewayMethods } from "./src/gateway-methods.js";
-import { registerControlUiInjector } from "./src/control-ui-injector.js";
 import { recordSpawned, recordEnded } from "./src/store.js";
 
 const plugin = {
@@ -45,28 +46,118 @@ const plugin = {
     const soulzApiUrl = (pluginCfg.soulzApiUrl as string) || "http://localhost:3000";
     const soulzApiKey = (pluginCfg.soulzApiKey as string) || "";
 
-    // ── HTTP handler: dashboard UI + API ─────────────────────────
-    // Using registerHttpHandler (not registerHttpRoute) for prefix matching
-    // of /plugins/openclaw-subagents/* paths
-    api.registerHttpHandler(
-      createHttpHandler({
+    // ── HTTP routes: dashboard UI + API ─────────────────────────
+    api.registerHttpRoute({
+      path: "/plugins/openclaw-subagents",
+      auth: "plugin",
+      match: "prefix",
+      handler: createHttpHandler({
         logger: api.logger,
         uiRoot,
         soulzApiUrl,
         soulzApiKey,
         runtime: api.runtime,
       }),
-    );
+    });
 
     // Gateway RPC methods for WebSocket consumers
     registerGatewayMethods(api);
 
     // ── Inject Subagents tab into Control UI ──────────────────────
-    // Intercepts GET / to inject <script> tag — no file copying needed
-    registerControlUiInjector({ api });
+    // Patches the on-disk index.html so the gateway's built-in handler
+    // serves it with our injector script tag included.
+    setupControlUiPatchSubagents({ api });
 
     api.logger.info("Subagents Dashboard plugin registered");
   },
 };
 
 export default plugin;
+
+// ── On-disk Control UI patching ──────────────────────────────────────
+
+const SUBAGENTS_TAG =
+  '<script src="/plugins/openclaw-subagents/injector.js" defer></script>';
+
+function setupControlUiPatchSubagents(params: { api: OpenClawPluginApi }): void {
+  const { api } = params;
+  const logger = api.logger;
+  const config = api.config as Record<string, any>;
+
+  try {
+    const controlUiRoot = resolveControlUiRootSubagents(config);
+    if (!controlUiRoot) {
+      logger.warn(
+        "[openclaw-subagents] Could not locate control-ui; tab injection skipped.",
+      );
+      return;
+    }
+
+    const indexPath = path.join(controlUiRoot, "index.html");
+    logger.info(`[openclaw-subagents] Control-ui root: ${controlUiRoot}`);
+
+    const html = fs.readFileSync(indexPath, "utf8");
+
+    if (html.includes("openclaw-subagents/injector.js")) {
+      logger.info("[openclaw-subagents] Injector tag already present.");
+      return;
+    }
+
+    const patched = html.replace("</body>", `    ${SUBAGENTS_TAG}\n  </body>`);
+    fs.writeFileSync(indexPath, patched, "utf8");
+    logger.info(`[openclaw-subagents] Injected tab script into ${indexPath}`);
+  } catch (err) {
+    logger.warn(`[openclaw-subagents] Failed to patch control-ui: ${err}`);
+  }
+}
+
+function resolveControlUiRootSubagents(
+  config?: Record<string, any>,
+): string | null {
+  const configRoot = config?.gateway?.controlUi?.root;
+  if (typeof configRoot === "string" && configRoot.trim()) {
+    const resolved = path.resolve(configRoot.trim());
+    const idx = path.join(resolved, "index.html");
+    if (fs.existsSync(idx)) return resolved;
+  }
+
+  try {
+    const require_ = createRequire(import.meta.url);
+    const openclawMain = require_.resolve("openclaw");
+    const openclawDir = path.dirname(openclawMain);
+    for (const rel of [
+      "control-ui",
+      "../control-ui",
+      "dist/control-ui",
+      "../dist/control-ui",
+    ]) {
+      const dir = path.join(openclawDir, rel);
+      if (fs.existsSync(path.join(dir, "index.html"))) return dir;
+    }
+  } catch { /* */ }
+
+  const candidates: string[] = [];
+  if (process.env.NVM_BIN) {
+    candidates.push(
+      path.resolve(process.env.NVM_BIN, "../lib/node_modules/openclaw/dist/control-ui"),
+    );
+  }
+  const home = process.env.HOME || "/root";
+  try {
+    const nvmDir = path.join(home, ".nvm/versions/node");
+    if (fs.existsSync(nvmDir)) {
+      for (const v of fs.readdirSync(nvmDir)) {
+        candidates.push(path.join(nvmDir, v, "lib/node_modules/openclaw/dist/control-ui"));
+      }
+    }
+  } catch { /* */ }
+  candidates.push("/usr/lib/node_modules/openclaw/dist/control-ui");
+  candidates.push(path.resolve(process.cwd(), "node_modules/openclaw/dist/control-ui"));
+
+  for (const dir of candidates) {
+    try {
+      if (fs.existsSync(path.join(dir, "index.html"))) return dir;
+    } catch { /* */ }
+  }
+  return null;
+}

@@ -1,27 +1,131 @@
 /**
  * Subagents Dashboard — Tab Injector for OpenClaw Control UI
  *
- * Injects a "Subagents" tab into the Control UI sidebar (Shadow DOM).
- * Uses MutationObserver on childList only (NO attributes) to avoid
- * infinite mutation loops that freeze the page.
+ * Injects a "Subagents" tab into the "Apps" nav-group in the Control
+ * UI sidebar (Shadow DOM). Uses the shared coordinator
+ * (window.__ocPluginTabs__) for cross-plugin tab coordination.
  */
 (function () {
   "use strict";
 
+  const PLUGIN_ID = "subagents";
   const PLUGIN_URL = "/plugins/openclaw-subagents/";
   const TAB_HASH = "#/subagents";
   const INJECT_ATTR = "data-subagents-dash";
+  const TAB_ATTR = "data-subagents-tab";
 
   const ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="4" cy="4" r="2"/><circle cx="20" cy="4" r="2"/><circle cx="4" cy="20" r="2"/><circle cx="20" cy="20" r="2"/><line x1="6.3" y1="5.7" x2="9.9" y2="9.3"/><line x1="14.1" y1="9.3" x2="17.7" y2="5.7"/><line x1="9.9" y1="14.7" x2="6.3" y2="18.3"/><line x1="14.1" y1="14.7" x2="17.7" y2="18.3"/></svg>`;
 
-  let active = false;
   let iframeBox = null;
-  let mutationPending = false;
   let _root = null;
+  let mutationPending = false;
 
-  function getRoot(app) {
-    return app.shadowRoot || app;
+  /* ── Shared coordinator ────────────────────────────────────── */
+
+  function ensureCoordinator(root) {
+    if (window.__ocPluginTabs__ && window.__ocPluginTabs__._v === 1) {
+      if (root && !window.__ocPluginTabs__._root) {
+        window.__ocPluginTabs__._root = root;
+      }
+      return window.__ocPluginTabs__;
+    }
+
+    const coord = {
+      _v: 1,
+      _plugins: {},
+      _activeId: null,
+      _setTabWrapped: false,
+      _popstateAttached: false,
+      _root: root || null,
+
+      register(id, opts) {
+        this._plugins[id] = opts;
+      },
+
+      activate(id) {
+        if (this._activeId === id) return;
+        if (!this._plugins[id]) return;
+        if (this._activeId && this._plugins[this._activeId]) {
+          this._plugins[this._activeId].deactivate();
+        }
+        this._restoreMainContent();
+        this._hideMainContent(this._plugins[id].injectAttr);
+        this._activeId = id;
+        this._plugins[id].activate();
+        const hash = this._plugins[id].hash;
+        if (location.hash !== hash) history.pushState(null, "", hash);
+      },
+
+      deactivateAll() {
+        if (!this._activeId) return;
+        if (this._plugins[this._activeId]) {
+          this._plugins[this._activeId].deactivate();
+        }
+        this._activeId = null;
+        this._restoreMainContent();
+      },
+
+      getActive() { return this._activeId; },
+
+      _hideMainContent(injectAttr) {
+        const r = this._root; if (!r) return;
+        const main = r.querySelector("main.content, main, .content");
+        if (!main) return;
+        for (const ch of main.children) {
+          if (ch.hasAttribute("data-oc-plugin-iframe")) {
+            ch.style.display = ch.getAttribute(injectAttr) === "iframe" ? "block" : "none";
+          } else {
+            if (ch.dataset._ocPrev === undefined) ch.dataset._ocPrev = ch.style.display;
+            ch.style.display = "none";
+          }
+        }
+      },
+
+      _restoreMainContent() {
+        const r = this._root; if (!r) return;
+        const main = r.querySelector("main.content, main, .content");
+        if (!main) return;
+        for (const ch of main.children) {
+          if (ch.hasAttribute("data-oc-plugin-iframe")) {
+            ch.style.display = "none";
+          } else if (ch.dataset._ocPrev !== undefined) {
+            ch.style.display = ch.dataset._ocPrev;
+            delete ch.dataset._ocPrev;
+          }
+        }
+      },
+
+      _wrapSetTab(app) {
+        if (this._setTabWrapped) return;
+        if (typeof app.setTab !== "function") return;
+        this._setTabWrapped = true;
+        const c = this;
+        const orig = app.setTab.bind(app);
+        app.setTab = function (t) { c.deactivateAll(); return orig(t); };
+      },
+
+      _attachPopstate() {
+        if (this._popstateAttached) return;
+        this._popstateAttached = true;
+        const c = this;
+        window.addEventListener("popstate", () => {
+          const hash = location.hash;
+          let matched = false;
+          for (const [id, opts] of Object.entries(c._plugins)) {
+            if (opts.hash === hash) { c.activate(id); matched = true; break; }
+          }
+          if (!matched && c._activeId) c.deactivateAll();
+        });
+      },
+    };
+
+    window.__ocPluginTabs__ = coord;
+    return coord;
   }
+
+  /* ── Helpers ────────────────────────────────────────────────── */
+
+  function getRoot(app) { return app.shadowRoot || app; }
 
   function waitForApp(cb) {
     let n = 0;
@@ -37,47 +141,76 @@
     poll();
   }
 
-  function injectTab(nav) {
+  /* ── Tab injection ─────────────────────────────────────────── */
+
+  function injectTab(nav, coord) {
     if (nav.querySelector(`[${INJECT_ATTR}]`)) return;
 
-    const group = document.createElement("div");
-    group.className = "nav-group";
-    group.setAttribute(INJECT_ATTR, "");
-    group.innerHTML = `
-      <button class="nav-label" aria-expanded="true">
-        <span class="nav-label__text">Monitoring</span>
-        <span class="nav-label__chevron">\u2212</span>
-      </button>
-      <div class="nav-group__items">
-        <a href="${TAB_HASH}" class="nav-item" title="Subagents Dashboard"
-           data-subagents-tab ${INJECT_ATTR}>
+    // Look for existing "Apps" nav-group
+    let appsGroup = null;
+    for (const grp of nav.querySelectorAll(".nav-group")) {
+      const lt = grp.querySelector(".nav-label__text");
+      if (lt && lt.textContent.trim() === "Apps") { appsGroup = grp; break; }
+    }
+
+    if (appsGroup) {
+      const items = appsGroup.querySelector(".nav-group__items");
+      if (items) {
+        const link = document.createElement("a");
+        link.href = TAB_HASH;
+        link.className = "nav-item";
+        link.title = "Subagents Dashboard";
+        link.setAttribute(TAB_ATTR, "");
+        link.setAttribute(INJECT_ATTR, "");
+        link.innerHTML = `
           <span class="nav-item__icon" aria-hidden="true">${ICON_SVG}</span>
-          <span class="nav-item__text">Subagents</span>
-        </a>
-      </div>`;
+          <span class="nav-item__text">Subagents</span>`;
+        items.appendChild(link);
+        link.addEventListener("click", (e) => {
+          e.preventDefault(); e.stopPropagation();
+          coord.activate(PLUGIN_ID);
+        });
+      }
+    } else {
+      // Fallback: create "Apps" nav-group
+      const group = document.createElement("div");
+      group.className = "nav-group";
+      group.setAttribute(INJECT_ATTR, "");
+      group.innerHTML = `
+        <button class="nav-label" aria-expanded="true">
+          <span class="nav-label__text">Apps</span>
+          <span class="nav-label__chevron">\u2212</span>
+        </button>
+        <div class="nav-group__items">
+          <a href="${TAB_HASH}" class="nav-item" title="Subagents Dashboard"
+             ${TAB_ATTR} ${INJECT_ATTR}>
+            <span class="nav-item__icon" aria-hidden="true">${ICON_SVG}</span>
+            <span class="nav-item__text">Subagents</span>
+          </a>
+        </div>`;
 
-    const links = nav.querySelector(".nav-group--links");
-    if (links) nav.insertBefore(group, links);
-    else nav.appendChild(group);
+      const links = nav.querySelector(".nav-group--links");
+      if (links) nav.insertBefore(group, links);
+      else nav.appendChild(group);
 
-    // Collapse toggle
-    const label = group.querySelector(".nav-label");
-    const chevron = group.querySelector(".nav-label__chevron");
-    const items = group.querySelector(".nav-group__items");
-    label.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const collapsed = items.style.display === "none";
-      items.style.display = collapsed ? "" : "none";
-      chevron.textContent = collapsed ? "\u2212" : "+";
-    });
+      const label = group.querySelector(".nav-label");
+      const chevron = group.querySelector(".nav-label__chevron");
+      const items = group.querySelector(".nav-group__items");
+      label.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const collapsed = items.style.display === "none";
+        items.style.display = collapsed ? "" : "none";
+        chevron.textContent = collapsed ? "\u2212" : "+";
+      });
 
-    // Tab click
-    group.querySelector("[data-subagents-tab]").addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      activate();
-    });
+      group.querySelector(`[${TAB_ATTR}]`).addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        coord.activate(PLUGIN_ID);
+      });
+    }
   }
+
+  /* ── Iframe management ─────────────────────────────────────── */
 
   function ensureIframe() {
     if (iframeBox || !_root) return;
@@ -86,6 +219,7 @@
 
     iframeBox = document.createElement("div");
     iframeBox.setAttribute(INJECT_ATTR, "iframe");
+    iframeBox.setAttribute("data-oc-plugin-iframe", "");
     iframeBox.style.cssText =
       "display:none;position:absolute;inset:0;z-index:50;background:var(--bg,#12141a);";
 
@@ -102,91 +236,66 @@
     main.appendChild(iframeBox);
   }
 
-  function activate() {
-    if (active || !_root) return;
-    active = true;
+  /* ── Plugin-local activate / deactivate ────────────────────── */
+
+  function activateSelf() {
     ensureIframe();
-
-    const main = _root.querySelector("main.content, main, .content");
-    if (main) {
-      for (const ch of main.children) {
-        if (ch.getAttribute(INJECT_ATTR) === "iframe") ch.style.display = "block";
-        else { ch.dataset._subPrev = ch.style.display; ch.style.display = "none"; }
-      }
-    }
-
-    const nav = _root.querySelector("aside.nav, aside, .nav");
+    if (iframeBox) iframeBox.style.display = "block";
+    const nav = _root && _root.querySelector("aside.nav, aside, .nav");
     if (nav) {
       nav.querySelectorAll(".nav-item").forEach((el) => {
-        if (el.hasAttribute(INJECT_ATTR)) el.classList.add("active");
-        else el.classList.remove("active");
+        el.classList.toggle("active", el.hasAttribute(TAB_ATTR));
       });
     }
-    history.pushState(null, "", TAB_HASH);
   }
 
-  function deactivate() {
-    if (!active || !_root) return;
-    active = false;
+  function deactivateSelf() {
     if (iframeBox) iframeBox.style.display = "none";
-
-    const main = _root.querySelector("main.content, main, .content");
-    if (main) {
-      for (const ch of main.children) {
-        if (ch.getAttribute(INJECT_ATTR) !== "iframe" && ch.dataset._subPrev !== undefined) {
-          ch.style.display = ch.dataset._subPrev;
-          delete ch.dataset._subPrev;
-        }
-      }
-    }
-    const tab = _root.querySelector("[data-subagents-tab]");
+    const tab = _root && _root.querySelector(`[${TAB_ATTR}]`);
     if (tab) tab.classList.remove("active");
   }
 
+  /* ── Bootstrap ─────────────────────────────────────────────── */
+
   waitForApp(function (app, root, nav) {
     _root = root;
-    injectTab(nav);
+    const coord = ensureCoordinator(root);
 
-    // Observe nav only, childList only — no attributes to avoid infinite loops
+    coord.register(PLUGIN_ID, {
+      activate: activateSelf,
+      deactivate: deactivateSelf,
+      hash: TAB_HASH,
+      injectAttr: INJECT_ATTR,
+    });
+
+    injectTab(nav, coord);
+
     const observer = new MutationObserver(() => {
       if (mutationPending) return;
       mutationPending = true;
       requestAnimationFrame(() => {
         mutationPending = false;
         const cur = root.querySelector("aside.nav, aside, .nav");
-        if (!cur) return;
-        if (!cur.querySelector(`[${INJECT_ATTR}]`)) injectTab(cur);
-        if (active) {
-          const other = cur.querySelector(".nav-item.active:not([data-subagents-tab])");
-          if (other) deactivate();
-        }
+        if (cur && !cur.querySelector(`[${INJECT_ATTR}]`)) injectTab(cur, coord);
       });
     });
     observer.observe(nav, { childList: true, subtree: true });
 
-    // Watch for nav replacement by Lit
     const navParent = nav.parentElement;
     if (navParent) {
       new MutationObserver(() => {
         const newNav = root.querySelector("aside.nav, aside, .nav");
         if (newNav && !newNav.querySelector(`[${INJECT_ATTR}]`)) {
-          injectTab(newNav);
+          injectTab(newNav, coord);
           observer.disconnect();
           observer.observe(newNav, { childList: true, subtree: true });
         }
       }).observe(navParent, { childList: true });
     }
 
-    if (typeof app.setTab === "function") {
-      const orig = app.setTab.bind(app);
-      app.setTab = function (t) { deactivate(); return orig(t); };
-    }
+    coord._wrapSetTab(app);
+    coord._attachPopstate();
 
-    window.addEventListener("popstate", () => {
-      if (location.hash === TAB_HASH) activate();
-      else if (active) deactivate();
-    });
-
-    if (location.hash === TAB_HASH) setTimeout(activate, 150);
+    if (location.hash === TAB_HASH) setTimeout(() => coord.activate(PLUGIN_ID), 150);
   });
 })();

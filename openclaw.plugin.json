@@ -1,6 +1,7 @@
 {
   "id": "openclaw-subagents",
   "name": "Subagents Dashboard",
+  "category": "monitoring",
   "description": "Control UI tab showing all spawned sub-agents with prompts, status, and token usage.",
   "configSchema": {
     "type": "object",
