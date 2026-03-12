@@ -46,11 +46,13 @@ const plugin = {
     const soulzApiUrl = (pluginCfg.soulzApiUrl as string) || "http://localhost:3000";
     const soulzApiKey = (pluginCfg.soulzApiKey as string) || "";
 
-    // ── HTTP routes: dashboard UI + API ─────────────────────────
+    // ── HTTP routes ─────────────────────────────────────────────
+    // Gateway only supports exact-path matching, so we register:
+    // 1. Base path → HTML bundle + API via ?_api= params
+    // 2. Injector script → loaded by Control UI <script> tag
     api.registerHttpRoute({
       path: "/plugins/openclaw-subagents",
       auth: "plugin",
-      match: "prefix",
       handler: createHttpHandler({
         logger: api.logger,
         uiRoot,
@@ -58,6 +60,24 @@ const plugin = {
         soulzApiKey,
         runtime: api.runtime,
       }),
+    });
+
+    const injectorPath = path.join(uiRoot, "injector.js");
+    api.registerHttpRoute({
+      path: "/plugins/openclaw-subagents/injector.js",
+      auth: "plugin",
+      handler: async (_req, res) => {
+        try {
+          const content = fs.readFileSync(injectorPath, "utf8");
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+          res.end(content);
+        } catch {
+          res.statusCode = 404;
+          res.end("Not found");
+        }
+        return true;
+      },
     });
 
     // Gateway RPC methods for WebSocket consumers

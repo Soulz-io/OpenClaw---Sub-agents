@@ -9,7 +9,7 @@
   "use strict";
 
   const PLUGIN_ID = "subagents";
-  const PLUGIN_URL = "/plugins/openclaw-subagents/";
+  const PLUGIN_URL = "/plugins/openclaw-subagents";
   const TAB_HASH = "#/subagents";
   const INJECT_ATTR = "data-subagents-dash";
   const TAB_ATTR = "data-subagents-tab";

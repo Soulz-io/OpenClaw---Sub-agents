@@ -1,4 +1,4 @@
-const API_BASE = "/plugins/openclaw-subagents/api";
+const API_BASE = "/plugins/openclaw-subagents";
 const POLL_INTERVAL = 5000;
 
 let subagents = [];
@@ -70,7 +70,7 @@ function esc(str) {
 
 async function fetchSubagents() {
   try {
-    const res = await fetch(`${API_BASE}/subagents`);
+    const res = await fetch(`${API_BASE}?_api=subagents`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     subagents = await res.json();
   } catch (err) {
@@ -432,7 +432,7 @@ async function doSpawn() {
     const taskEl = document.getElementById("task-desc");
     if (taskEl && taskEl.value.trim()) body.task_description = taskEl.value.trim();
 
-    const res = await fetch(`${API_BASE}/spawn`, {
+    const res = await fetch(`${API_BASE}?_api=spawn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
